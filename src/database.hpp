@@ -212,6 +212,15 @@ void read(char cap_file_name[], char net_file_name[]) {
                 if(pin_id >= 10000) access_points.emplace_back(vector<int> (20));
                 access_points[pin_id][0] = 0;
                 while(1) {//reading an access point
+		    if (access_points[pin_id][0] == 0) {
+			int commaCount = 0;
+			while (commaCount < 2 && buffer[buf_pt] != '\0') {
+			    if (buffer[buf_pt] == ',') {
+			        commaCount++;
+			    }
+			    buf_pt++;
+			}
+		    }
                     int l = read_int(buffer, buf_pt);
                     int x = read_int(buffer, buf_pt);
                     int y = read_int(buffer, buf_pt);
@@ -219,7 +228,10 @@ void read(char cap_file_name[], char net_file_name[]) {
                     maxx = max(maxx, x);
                     miny = min(miny, y);
                     maxy = max(maxy, y);
-                    
+		    
+                    // cout << "name: " << nets.back().name << endl;
+		    // cout << "l: " << l << "  x: " << x << "  y: " << y << endl;
+
                     access_points[pin_id][++access_points[pin_id][0]] = l * X * Y + x * Y + y;
                     assert(access_points[pin_id][0] < 20);
                     bool pin_end = false;
@@ -231,7 +243,7 @@ void read(char cap_file_name[], char net_file_name[]) {
                     }
                 }
                 bool net_end = false;
-                while(!isdigit(buffer[buf_pt]))
+                while(buffer[buf_pt + 1] != ',')
                     if(buffer[buf_pt++] == ')') { net_end = true; break; }
                 if(net_end) { 
                     nets.back().init(pin_id, access_points, minx, maxx, miny, maxy);
