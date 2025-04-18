@@ -1,5 +1,6 @@
 #pragma once
 #include "database.hpp"
+#include "npy.hpp"
 #include <queue>
 #include <mutex>
 #include <algorithm>
@@ -40,6 +41,26 @@ vector<int> pin_cnt_sum_cpu;
 #define BLOCK_CNT(tot, thread_cnt) ((tot) / (thread_cnt) + ((tot) % (thread_cnt) > 0))
 #define INF 1e22
 
+extern __managed__ unsigned char *congestion_matrix;
+
+inline void read_npy_file(const char *npy_filename) {
+    npy::npy_data d = npy::read_npy<float>(npy_filename);
+    std::vector<float> temp = d.data;
+
+    std::vector<unsigned char> hostCongestion(temp.size());
+    for (size_t i = 0; i < temp.size(); i++) {
+        float f = temp[i];
+        if (f < 0.0f) f = 0.0f;
+        if (f > 1.0f) f = 1.0f;
+        int mappedVal = static_cast<int>((f / 1.0f) * 255.0f + 0.5f);
+        if (mappedVal < 0) mappedVal = 0;
+        if (mappedVal > 255) mappedVal = 255;
+        hostCongestion[i] = static_cast<unsigned char>(mappedVal);
+    }
+
+    cudaMallocManaged(&congestion_matrix, hostCongestion.size() * sizeof(unsigned char));
+    memcpy(congestion_matrix, hostCongestion.data(), hostCongestion.size() * sizeof(unsigned char));
+}
 
 void build_cuda_database();
 
@@ -132,6 +153,30 @@ vector<vector<int>> generate_batches_rsmt(vector<int> &nets2route, int MAX_BATCH
     return move(batches);
 }
 
+int mapxy(int nx, const vector<int> &xs, const vector<int> &nxs, int d) {
+   int max, min, mid;
+
+   min = 0;
+   max = d - 1;
+
+   while (min <= max) {
+       mid = (min + max) / 2;
+       if (nx == nxs[mid]) {
+          return (xs[mid]);
+       }
+       if (nx < nxs[mid]) {
+          max = mid - 1;
+       }
+       else {
+          min = mid + 1;
+       }
+   }
+
+    std::cout << "mapping error: could not find "
+              << nx << " in newAxis\n";
+    return nx;
+}
+
 double TOT_RSMT_LENGTH = 0;
 vector<vector<int>> my_flute(unordered_set<int> &pos) {
     const int MAX_DEGREE = 10000;
@@ -141,15 +186,95 @@ vector<vector<int>> my_flute(unordered_set<int> &pos) {
     vector<int> nodes, parent;
     vector<tuple<int, int, int>> edges;
     for(auto e : pos) {
-        x.push_back(db::dr_x[e / Y]);
-        y.push_back(db::dr_y[e % Y]);
-        cnt++;
+	int dbx = db::dr_x[e / Y];
+	int dby = db::dr_y[e % Y];
+	int grx = db::dr2gr_x[dbx];
+	int gry = db::dr2gr_y[dby];
+        x.push_back(grx);
+        y.push_back(gry);
+	cnt++;
     }
-    auto tree = flute::flute(cnt, x.data(), y.data(), 3);
+
+    vector<int> xs(cnt), ys(cnt), s(cnt);
+
+    vector<int> idx(cnt);
+    iota(idx.begin(), idx.end(), 0);
+
+    vector<int> idx_x = idx;
+    sort(idx_x.begin(), idx_x.end(),
+        [&](int a, int b) { return x[a] < x[b]; });
+
+    vector<int> x_rank(cnt);
+    for (int i = 0; i < cnt; ++i) {
+        xs[i] = x[idx_x[i]];
+        x_rank[idx_x[i]] = i;
+    }
+
+    vector<int> idx_y = idx;
+    sort(idx_y.begin(), idx_y.end(),
+        [&](int a, int b) { return y[a] < y[b]; });
+
+    for (int i = 0; i < cnt; ++i) {
+        ys[i] = y[idx_y[i]];
+        s[i] = x_rank[idx_y[i]];
+    }
+
+    vector<int> x_seg(cnt - 1), y_seg(cnt - 1);
+    for (int i = 0; i < cnt - 1; i++) {
+        x_seg[i] = (xs[i + 1] - xs[i]) * 100;
+        y_seg[i] = (ys[i + 1] - ys[i]) * 100;
+    }
+
+    float coeffH = 0.5;
+    float coeffV = 0.5;
+
+    for (int i = 0; i < cnt - 1; i++) {
+        int sum = 0;
+        for (int y = 0; y < Y; y++) {
+            for (int x = xs[i]; x < xs[i + 1]; x++) {
+		int idx = x + y * X;
+		if (idx > (X * Y)) {
+		    cout << "ERROR: " << idx << endl;
+		}
+                sum += congestion_matrix[x + y * X];
+            }
+        }
+        float average = float(sum) / ((xs[i + 1] - xs[i]) * Y);
+        float norm = average / 255.0f;
+        int warped = int(std::round(x_seg[i] * (1.0f + coeffH * norm)));
+        x_seg[i] = std::max(1, warped);
+    }
+
+    for (int i = 0; i < cnt - 1; i++) {
+        int sum = 0;
+        for (int x = 0; x < X; x++) {
+            for (int y = ys[i]; y < ys[i + 1]; y++) {
+                sum += congestion_matrix[x + y * X];
+            }
+        }
+        float average = float(sum) / ((ys[i + 1] - ys[i]) * X);
+        float norm = average / 255.0f;
+        int warped = int(std::round(y_seg[i] * (1.0f + coeffV * norm)));
+        y_seg[i] = std::max(1, warped);
+    }
+
+    vector<int> nxs(cnt), nys(cnt);
+    nxs[0] = xs[0];
+    nys[0] = ys[0];
+    for (int i = 0; i < cnt - 1; i++) {
+        nxs[i + 1] = nxs[i] + x_seg[i];
+        nys[i + 1] = nys[i] + y_seg[i];
+    }
+
+    auto tree = flute::flutes(cnt, nxs.data(), nys.data(), s.data(), 3);
+    
     for(int i = 0; i < cnt * 2 - 2; i++) {
         flute::Branch &branch = tree.branch[i];
-        nodes.emplace_back(db::dr2gr_x[branch.x] * Y + db::dr2gr_y[branch.y]);
-    }    
+        branch.x = mapxy(branch.x, xs, nxs, cnt);
+        branch.y = mapxy(branch.y, ys, nys, cnt);
+        nodes.emplace_back(branch.x * Y + branch.y);
+    }
+
     sort(nodes.begin(), nodes.end());
     nodes.erase(unique(nodes.begin(), nodes.end()), nodes.end());
     parent.resize(nodes.size());
@@ -158,10 +283,10 @@ vector<vector<int>> my_flute(unordered_set<int> &pos) {
     for(int i = 0; i < cnt * 2 - 2; i++) if(tree.branch[i].n < cnt * 2 - 2) {
         Branch &branch1 = tree.branch[i], &branch2 = tree.branch[branch1.n];
         int u, v;
-        u = lower_bound(nodes.begin(), nodes.end(), db::dr2gr_x[branch1.x] * Y + db::dr2gr_y[branch1.y]) - nodes.begin();
-        v = lower_bound(nodes.begin(), nodes.end(), db::dr2gr_x[branch2.x] * Y + db::dr2gr_y[branch2.y]) - nodes.begin();
+        u = lower_bound(nodes.begin(), nodes.end(), branch1.x * Y + branch1.y) - nodes.begin();
+        v = lower_bound(nodes.begin(), nodes.end(), branch2.x * Y + branch2.y) - nodes.begin();
         if(u == v) continue;
-        edges.emplace_back(make_tuple(abs(branch1.x - branch2.x) + abs(branch1.y - branch2.y), u, v));
+        edges.emplace_back(make_tuple(abs(db::dr_x[branch1.x] - db::dr_x[branch2.x]) + abs(db::dr_y[branch1.y] - db::dr_y[branch2.y]), u, v));
             
     }
     sort(edges.begin(), edges.end());

@@ -57,7 +57,8 @@ void runtime_breakdown() {
 int main(int argc, char *argv[]) {
     program_start = std::chrono::high_resolution_clock::now();
 
-    const int cap_file_idx = 2, net_file_idx = 4, out_file_idx = 6;
+    const int cap_file_idx = 2, net_file_idx = 4, out_file_idx = 6, npy_file_idx = 8;
+    cudb::read_npy_file(argv[npy_file_idx]);
     db::read(argv[cap_file_idx], argv[net_file_idx]);
     out_file = fopen(argv[out_file_idx], "w");
     readLUT("POWV9.dat", "POST9.dat");

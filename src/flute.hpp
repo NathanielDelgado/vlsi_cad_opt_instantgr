@@ -46,16 +46,18 @@ Tree flutes_LD(int d, DType* xs, DType* ys, int* s);
 Tree flutes_MD(int d, DType* xs, DType* ys, int* s, int acc);
 Tree flutes_RDP(int d, DType* xs, DType* ys, int* s, int acc);
 
-#if REMOVE_DUPLICATE_PIN == 1
-#define flutes(d, xs, ys, s, acc) flutes_RDP(d, xs, ys, s, acc)
-#else
-#define flutes(d, xs, ys, s, acc) flutes_ALLD(d, xs, ys, s, acc)
-#endif
-
 #define flutes_ALLD(d, xs, ys, s, acc) flutes_LMD(d, xs, ys, s, acc)
 
 #define flutes_LMD(d, xs, ys, s, acc) \
   (d <= DEGREE ? flutes_LD(d, xs, ys, s) : flutes_MD(d, xs, ys, s, acc))
+
+inline Tree flutes(int d, DType* xs, DType* ys, int* s, int acc) {
+#if REMOVE_DUPLICATE_PIN == 1
+    return flutes_RDP(d, xs, ys, s, acc);
+#else
+    return flutes_LMD(d, xs, ys, s, acc);
+#endif
+}
 
 
 #if DEGREE <= 7
