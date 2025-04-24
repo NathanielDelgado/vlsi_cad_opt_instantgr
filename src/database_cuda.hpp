@@ -178,6 +178,10 @@ int mapxy(int nx, const vector<int> &xs, const vector<int> &nxs, int d) {
 }
 
 // #define ORIG
+// #define LINEAR
+// #define POWER_LAW
+// #define ADDITIVE_BUMP
+#define CAPPED_MULT_THRESH
 
 double TOT_RSMT_LENGTH = 0;
 vector<vector<int>> my_flute(unordered_set<int> &pos) {
@@ -274,6 +278,8 @@ vector<vector<int>> my_flute(unordered_set<int> &pos) {
         y_seg[i] = (ys[i + 1] - ys[i]) * 100;
     }
 
+#ifdef LINEAR
+
     std::vector<int> orig_x_seg = x_seg;
     std::vector<int> orig_y_seg = y_seg;
     
@@ -281,8 +287,8 @@ vector<vector<int>> my_flute(unordered_set<int> &pos) {
     std::vector<int>  x_sum(M), y_sum(M), x_raw_warp(M), y_raw_warp(M);
     std::vector<float> x_avg(M), x_norm(M), y_avg(M), y_norm(M);
 
-    float coeffH = 2.0;
-    float coeffV = 1.0;
+    float coeffH = 5.75;
+    float coeffV = 2.1;
 
     for(int i = 0; i < M; ++i) {
         int sum = 0;
@@ -314,36 +320,160 @@ vector<vector<int>> my_flute(unordered_set<int> &pos) {
         y_seg[i]      = std::max(1, raw);
     }
 
-    static int debug_run = 0;
-    if (debug_run < 10) {
-        std::ofstream dbg("warp_debug.txt", std::ios::app);
-        dbg << "=== Invocation " << debug_run++ << " ===\n";
+    // static int debug_run = 0;
+    // if (debug_run < 10) {
+    //     std::ofstream dbg("warp_debug.txt", std::ios::app);
+    //     dbg << "=== Invocation " << debug_run++ << " ===\n";
+    // 
+    //     for(int i = 0; i < M; ++i) {
+    //         dbg << "Segment " << i << " (H): "
+    //             << "orig=" << orig_x_seg[i]
+    //             << ", sum="   << x_sum[i]
+    //             << ", avg="   << x_avg[i]
+    //             << ", norm="  << x_norm[i]
+    //             << ", formula=round(" << orig_x_seg[i]
+    //                << "*(1+" << coeffH << "*" << x_norm[i] << "))"
+    //             << "="     << x_raw_warp[i]
+    //             << " -> final=" << x_seg[i]
+    //             << "\n";
+    // 
+    //         dbg << "Segment " << i << " (V): "
+    //             << "orig=" << orig_y_seg[i]
+    //             << ", sum="   << y_sum[i]
+    //             << ", avg="   << y_avg[i]
+    //             << ", norm="  << y_norm[i]
+    //             << ", formula=round(" << orig_y_seg[i]
+    //                << "*(1+" << coeffV << "*" << y_norm[i] << "))"
+    //             << "="     << y_raw_warp[i]
+    //             << " -> final=" << y_seg[i]
+    //             << "\n";
+    //     }
+    //     dbg << "\n";
+    // }
+
+#elif defined(POWER_LAW)
+
+    std::vector<int> orig_x_seg = x_seg;
+    std::vector<int> orig_y_seg = y_seg;
+
+    int M = cnt - 1;
     
-        for(int i = 0; i < M; ++i) {
-            dbg << "Segment " << i << " (H): "
-                << "orig=" << orig_x_seg[i]
-                << ", sum="   << x_sum[i]
-                << ", avg="   << x_avg[i]
-                << ", norm="  << x_norm[i]
-                << ", formula=round(" << orig_x_seg[i]
-                   << "*(1+" << coeffH << "*" << x_norm[i] << "))"
-                << "="     << x_raw_warp[i]
-                << " -> final=" << x_seg[i]
-                << "\n";
+    float coeffH = 5.75f, coeffV = 2.1f;
+    float pH = 1000.0f,  pV = 1000.0f;
+
+    for(int i = 0; i < M; ++i) {
+        int sum = 0;
+        for(int yy = 0; yy < Y; ++yy)
+          for(int xx = xs[i]; xx < xs[i+1]; ++xx)
+            sum += congestion_matrix[xx + yy * X];
     
-            dbg << "Segment " << i << " (V): "
-                << "orig=" << orig_y_seg[i]
-                << ", sum="   << y_sum[i]
-                << ", avg="   << y_avg[i]
-                << ", norm="  << y_norm[i]
-                << ", formula=round(" << orig_y_seg[i]
-                   << "*(1+" << coeffV << "*" << y_norm[i] << "))"
-                << "="     << y_raw_warp[i]
-                << " -> final=" << y_seg[i]
-                << "\n";
-        }
-        dbg << "\n";
+        float avg  = float(sum) / ((xs[i+1] - xs[i]) * Y);
+        float norm = (avg/255.0f);
+        float normp = powf(norm, pH);
+    
+        int raw = int(std::round(orig_x_seg[i] * (1.0f + coeffH * normp)));
+        x_seg[i] = std::max(1, raw);
     }
+    
+    for(int i = 0; i < M; ++i) {
+        int sum = 0;
+        for(int xx = 0; xx < X; ++xx)
+          for(int yy = ys[i]; yy < ys[i+1]; ++yy)
+            sum += congestion_matrix[xx + yy * X];
+    
+        float avg  = float(sum) / ((ys[i+1] - ys[i]) * X);
+        float norm = (avg/255.0f);
+        float normp = powf(norm, pV);
+    
+        int raw = int(std::round(orig_y_seg[i] * (1.0f + coeffV * normp)));
+        y_seg[i] = std::max(1, raw);
+    }
+
+#elif defined(ADDITIVE_BUMP)
+
+    std::vector<int> orig_x_seg = x_seg;
+    std::vector<int> orig_y_seg = y_seg;
+
+    int M = cnt - 1;
+    
+    float coeffH = 5.75f, coeffV = 2.1f;
+    int minBump = -1;
+    
+    for(int i = 0; i < M; ++i) {
+        int sum = 0;
+        for(int yy = 0; yy < Y; ++yy)
+          for(int xx = xs[i]; xx < xs[i+1]; ++xx)
+            sum += congestion_matrix[xx + yy * X];
+    
+        float avg = float(sum) / ((xs[i+1] - xs[i]) * Y);
+        int bump = (sum > 0 ? minBump : 0);
+        int raw  = orig_x_seg[i] + int(coeffH * avg) + bump;
+        x_seg[i] = std::max(1, raw);
+    }
+    
+    for(int i = 0; i < M; ++i) {
+        int sum = 0;
+        for(int xx = 0; xx < X; ++xx)
+          for(int yy = ys[i]; yy < ys[i+1]; ++yy)
+            sum += congestion_matrix[xx + yy * X];
+    
+        float avg = float(sum) / ((ys[i+1] - ys[i]) * X);
+        int bump = (sum > 0 ? minBump : 0);
+        int raw  = orig_y_seg[i] + int(coeffV * avg) + bump;
+        y_seg[i] = std::max(1, raw);
+    }
+
+#elif defined(CAPPED_MULT_THRESH)
+
+    std::vector<int> orig_x_seg = x_seg;
+    std::vector<int> orig_y_seg = y_seg;
+
+    int M = cnt - 1;
+    
+    float coeffH     = 5.75f, coeffV = 2.1f;
+    float thrH       = 1.0f,  thrV    = 1.0f;
+    float maxStretch = 1.0f;
+
+    for(int i = 0; i < M; ++i) {
+        int sum = 0;
+        for(int yy = 0; yy < Y; ++yy)
+          for(int xx = xs[i]; xx < xs[i+1]; ++xx)
+            sum += congestion_matrix[xx + yy * X];
+    
+        float avg  = float(sum) / ((xs[i+1] - xs[i]) * Y);
+        float norm = avg/255.0f;
+        float warp = 1.0f;
+        if(norm > thrH) {
+          warp = 1.0f + coeffH * (norm - thrH);
+          warp = std::min(warp, maxStretch);
+        }
+    
+        int raw = int(std::round(orig_x_seg[i] * warp));
+        x_seg[i] = std::max(1, raw);
+    }
+    
+    for(int i = 0; i < M; ++i) {
+        int sum = 0;
+        for(int xx = 0; xx < X; ++xx)
+          for(int yy = ys[i]; yy < ys[i+1]; ++yy)
+            sum += congestion_matrix[xx + yy * X];
+    
+        float avg  = float(sum) / ((ys[i+1] - ys[i]) * X);
+        float norm = avg/255.0f;
+        float warp = 1.0f;
+        if(norm > thrV) {
+          warp = 1.0f + coeffV * (norm - thrV);
+          warp = std::min(warp, maxStretch);
+        }
+    
+        int raw = int(std::round(orig_y_seg[i] * warp));
+        y_seg[i] = std::max(1, raw);
+    }
+
+#else
+    #error "Implementation must be defined"
+
+#endif
 
     vector<int> nxs(cnt), nys(cnt);
     nxs[0] = xs[0];
